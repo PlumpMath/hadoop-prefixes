@@ -3,7 +3,7 @@ package pl.stupaq.hadoop.prefixes;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 
-public interface WritableMonoid extends Writable {
+public interface WritableMonoid extends Writable, Cloneable {
 
 	void fromText(Text value);
 
@@ -12,4 +12,6 @@ public interface WritableMonoid extends Writable {
 	WritableMonoid rightOp(WritableMonoid right);
 
 	void rightOpMutable(WritableMonoid right);
+
+	WritableMonoid clone();
 }

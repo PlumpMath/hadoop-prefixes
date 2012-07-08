@@ -13,10 +13,6 @@ public class IntWritableMonoid extends IntWritable implements WritableMonoid {
 		super(value);
 	}
 
-	public IntWritableMonoid(IntWritableMonoid value) {
-		this(value.get());
-	}
-
 	@Override
 	public WritableMonoid neutral() {
 		return new IntWritableMonoid();
@@ -40,5 +36,10 @@ public class IntWritableMonoid extends IntWritable implements WritableMonoid {
 	@Override
 	public void fromText(Text value) {
 		set(Integer.parseInt(value.toString()));
+	}
+
+	@Override
+	public IntWritableMonoid clone() {
+		return new IntWritableMonoid(get());
 	}
 }

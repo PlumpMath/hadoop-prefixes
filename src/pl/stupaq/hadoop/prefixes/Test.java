@@ -13,7 +13,13 @@ public class Test {
 	public static void main(String[] args) throws IOException,
 			ClassNotFoundException, InterruptedException {
 
-		MeldJob job = new MeldJob(IntWritableMonoid.class, 0);
-		System.exit(job.waitForCompletion(true) ? 0 : 1);
+		MeldJob job1 = new MeldJob(IntWritableMonoid.class, 0);
+		job1.waitForCompletion(true);
+
+		SplitJob job2 = new SplitJob(IntWritableMonoid.class, 1);
+		job2.waitForCompletion(true);
+
+		SplitJob job3 = new SplitJob(IntWritableMonoid.class, 0);
+		job3.waitForCompletion(true);
 	}
 }

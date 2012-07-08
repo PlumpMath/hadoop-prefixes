@@ -11,77 +11,46 @@ import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
+import org.apache.hadoop.mapreduce.lib.partition.HashPartitioner;
 import org.apache.hadoop.mapreduce.lib.partition.InputSampler;
 import org.apache.hadoop.mapreduce.lib.partition.TotalOrderPartitioner;
 
 // TODO automatically set reduce tasks number
 // TODO manage input and output formats
-public class MeldJob extends Job {
+// FIXME ensure that partitioner don't send prefixes and subintervals to different reducers
+public class SplitJob extends Job {
 
 	private static final String PARTITION_NAME = "_partition.lst";
 	private static final String INPUT_LEVELS_PATH = "/user/user/input/prefixes/";
+	private static final String OUTPUT_LEVELS_PATH = "/user/user/output/prefixes/";
 
 	private static final String ARG_MONOID_NAME = "pl.stupaq.hadoop.prefixes.monoi.class";
 
-	private static class MeldMapper
+	private static class SplitMapper
 			extends
 			Mapper<RangeWritable, WritableMonoid, RangeWritable, WritableMonoid> {
-
-		RangeWritable range;
-		WritableMonoid sum;
-
-		@Override
-		protected void setup(
-				Mapper<RangeWritable, WritableMonoid, RangeWritable, WritableMonoid>.Context context)
-				throws IOException, InterruptedException {
-
-			Configuration conf = context.getConfiguration();
-			range = new RangeWritable(Long.MIN_VALUE, Long.MIN_VALUE);
-			sum = WritableMonoidUtils.getInstance(conf.get(ARG_MONOID_NAME));
-		};
 
 		@Override
 		protected void map(RangeWritable key, WritableMonoid value,
 				Context context) throws IOException, InterruptedException {
 
-			// accumulate
-			if (range.meldNextRange(key)) {
-				// join with last range
-				sum.rightOpMutable(value);
-			} else {
-				if (range.getLast() >= 0) {
-					// emit range
-					context.write(range, sum);
-				}
-				// save new range
-				range = key.clone();
-				sum = value.clone();
-			}
-		};
-
-		@Override
-		protected void cleanup(Context context) throws IOException,
-				InterruptedException {
-
-			if (range.getLast() >= 0) {
-				// emit last range
-				context.write(range, sum);
-			}
+			context.write(key, value);
 		};
 	}
 
-	private static class MeldReducer
+	private static class SplitReducer
 			extends
 			Reducer<RangeWritable, WritableMonoid, RangeWritable, WritableMonoid> {
 
-		private WritableMonoid monoid;
+		private WritableMonoid sum;
+		private RangeWritable last_range;
 
 		@Override
 		protected void setup(Context context) throws IOException,
 				InterruptedException {
 
 			Configuration conf = context.getConfiguration();
-			monoid = WritableMonoidUtils.getInstance(conf.get(ARG_MONOID_NAME));
+			sum = WritableMonoidUtils.getInstance(conf.get(ARG_MONOID_NAME));
 		};
 
 		@Override
@@ -89,25 +58,33 @@ public class MeldJob extends Job {
 				Iterable<WritableMonoid> values, Context context)
 				throws IOException, InterruptedException {
 
-			WritableMonoid sum = monoid.neutral();
+			WritableMonoid value = values.iterator().next();
 
-			for (WritableMonoid value : values) {
-				sum.rightOpMutable(value);
+			if (key.isPrefix()) {
+				last_range = key.clone();
+				sum = value.clone();
+				context.write(last_range, sum);
+			} else {
+				// not a prefix so try to merge
+				if (last_range.meldNextRange(key)) {
+					sum.rightOpMutable(value);
+					context.write(last_range, sum);
+				}
 			}
-			context.write(key, sum);
 		};
 	}
 
-	public MeldJob(Configuration configuration, Class<?> monoidClass, int level)
+	public SplitJob(Configuration configuration, Class<?> monoidClass, int level)
 			throws IOException, ClassNotFoundException, InterruptedException {
 		super(configuration);
 		configuration = null;
 
 		conf.set(ARG_MONOID_NAME, monoidClass.getName());
 
-		Path inputPath = new Path(INPUT_LEVELS_PATH + level);
-		Path outputPath = new Path(INPUT_LEVELS_PATH + (level + 1));
-		Path partitionPath = new Path(INPUT_LEVELS_PATH + PARTITION_NAME);
+		Path inputPathMeld = new Path(INPUT_LEVELS_PATH + level);
+		Path inputPathSplit = new Path(OUTPUT_LEVELS_PATH + (level + 1));
+		Path outputPath = new Path(OUTPUT_LEVELS_PATH + level);
+		Path partitionPath = new Path(OUTPUT_LEVELS_PATH + PARTITION_NAME);
 
 		// setup job
 		setJarByClass(SplitJob.class);
@@ -116,34 +93,50 @@ public class MeldJob extends Job {
 		// setup custom input format
 		KeyValueRangeMonoidInputFormat.setArgMonoidName(ARG_MONOID_NAME);
 		setInputFormatClass(KeyValueRangeMonoidInputFormat.class);
-		FileInputFormat.addInputPath(this, inputPath);
+		// we're adding input paths later
 
-		setMapperClass(MeldMapper.class);
+		setMapperClass(SplitMapper.class);
 		setMapOutputKeyClass(RangeWritable.class);
 		setMapOutputValueClass(monoidClass);
 
-		setReducerClass(MeldReducer.class);
+		setReducerClass(SplitReducer.class);
 		setOutputKeyClass(RangeWritable.class);
 		setOutputValueClass(monoidClass);
 
 		setOutputFormatClass(TextOutputFormat.class);
 		FileOutputFormat.setOutputPath(this, outputPath);
 
-		// prepare file system destination
+		// prepare file system destination and ensure input
 		FileSystem fs = FileSystem.get(conf);
 		fs.delete(outputPath, true);
-		fs.close();
 
-		// set total order partitioner
-		setPartitionerClass(TotalOrderPartitioner.class);
-		TotalOrderPartitioner.setPartitionFile(conf, partitionPath);
-		// prepare partitions file
-		InputSampler.writePartitionFile(this,
-				new InputSampler.SplitSampler<RangeWritable, WritableMonoid>(
-						getNumReduceTasks()));
+		if (fs.exists(new Path(OUTPUT_LEVELS_PATH))) {
+			// set total ordering
+			setPartitionerClass(TotalOrderPartitioner.class);
+			TotalOrderPartitioner.setPartitionFile(conf, partitionPath);
+			// add input path for sampling
+			FileInputFormat.addInputPath(this, inputPathSplit);
+			// prepare partitions file
+			InputSampler
+					.writePartitionFile(
+							this,
+							new InputSampler.SplitSampler<RangeWritable, WritableMonoid>(
+									getNumReduceTasks()));
+			// add other input paths
+			FileInputFormat.addInputPath(this, inputPathMeld);
+		} else {
+			// set hash partitioner
+			setPartitionerClass(HashPartitioner.class);
+			// add available all input paths
+			FileInputFormat.addInputPath(this, inputPathMeld);
+			// set one reducer
+			setNumReduceTasks(1);
+		}
+
+		fs.close();
 	}
 
-	public MeldJob(Class<?> monoid, int level) throws IOException,
+	public SplitJob(Class<?> monoid, int level) throws IOException,
 			ClassNotFoundException, InterruptedException {
 		this(new Configuration(), monoid, level);
 	}
