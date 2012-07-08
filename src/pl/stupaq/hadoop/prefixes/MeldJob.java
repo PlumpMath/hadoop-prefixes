@@ -1,63 +1,52 @@
 package pl.stupaq.hadoop.prefixes;
 
 import java.io.IOException;
-import java.util.Scanner;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
-import org.apache.hadoop.mapreduce.lib.input.KeyValueTextInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
+import org.apache.hadoop.mapreduce.lib.partition.InputSampler;
+import org.apache.hadoop.mapreduce.lib.partition.TotalOrderPartitioner;
 
+// TODO automatically set reduce tasks number
+// TODO manage input and output formats
 public class MeldJob extends Job {
 
-	private static final String MONOID_CONF = "WritableMonoidClass";
+	private static final String PARTITION_NAME = "_partition.lst";
+	private static final String INPUT_LEVELS_PATH = "/user/user/input/prefixes/";
 
-	private static class MeldMapper extends
-			Mapper<Text, Text, RangeWritable, WritableMonoid> {
+	private static final String ARG_MONOID_NAME = "pl.stupaq.hadoop.prefixes.monoi.class";
 
-		WritableMonoid monoid;
+	private static class MeldMapper
+			extends
+			Mapper<RangeWritable, WritableMonoid, RangeWritable, WritableMonoid> {
+
 		RangeWritable range;
 		WritableMonoid sum;
 
 		@Override
 		protected void setup(
-				Mapper<Text, Text, RangeWritable, WritableMonoid>.Context context)
+				Mapper<RangeWritable, WritableMonoid, RangeWritable, WritableMonoid>.Context context)
 				throws IOException, InterruptedException {
-			// figure out monoid to use
-			try {
-				Configuration conf = context.getConfiguration();
-				String className = conf.get(MONOID_CONF);
-				monoid = (WritableMonoid) Class.forName(className)
-						.newInstance();
-			} catch (InstantiationException | IllegalAccessException
-					| ClassNotFoundException e) {
-				e.printStackTrace();
-				throw new IOException();
-			}
 
+			Configuration conf = context.getConfiguration();
 			range = new RangeWritable(Long.MIN_VALUE, Long.MIN_VALUE);
-			sum = monoid.neutral();
+			sum = WritableMonoidUtils.getInstance(conf.get(ARG_MONOID_NAME));
 		};
 
 		@Override
-		protected void map(
-				Text key,
-				Text value,
-				Mapper<Text, Text, RangeWritable, WritableMonoid>.Context context)
-				throws IOException, InterruptedException {
+		protected void map(RangeWritable key, WritableMonoid value,
+				Context context) throws IOException, InterruptedException {
 
 			// parse input
-			Scanner scanner = new Scanner(key.toString());
-			RangeWritable new_range = new RangeWritable(scanner.nextLong(),
-					scanner.nextLong());
-			WritableMonoid num = monoid.neutral();
-			num.fromText(value);
+			RangeWritable new_range = key;
+			WritableMonoid num = value;
 
 			// accumulate
 			if (range.rightMeld(new_range)) {
@@ -75,9 +64,8 @@ public class MeldJob extends Job {
 		};
 
 		@Override
-		protected void cleanup(
-				Mapper<Text, Text, RangeWritable, WritableMonoid>.Context context)
-				throws IOException, InterruptedException {
+		protected void cleanup(Context context) throws IOException,
+				InterruptedException {
 
 			if (range.getLast().get() >= 0) {
 				// emit last range
@@ -86,36 +74,81 @@ public class MeldJob extends Job {
 		};
 	}
 
-	public MeldJob(Configuration conf, Class<?> monoid, int level)
-			throws IOException {
-		super(conf);
+	private static class MeldReducer
+			extends
+			Reducer<RangeWritable, WritableMonoid, RangeWritable, WritableMonoid> {
 
-		getConfiguration().set(MONOID_CONF, monoid.getName());
+		private WritableMonoid monoid;
 
+		@Override
+		protected void setup(Context context) throws IOException,
+				InterruptedException {
+
+			Configuration conf = context.getConfiguration();
+			monoid = WritableMonoidUtils.getInstance(conf.get(ARG_MONOID_NAME));
+		};
+
+		@Override
+		protected void reduce(RangeWritable key,
+				Iterable<WritableMonoid> values, Context context)
+				throws IOException, InterruptedException {
+
+			WritableMonoid sum = monoid.neutral();
+
+			for (WritableMonoid value : values) {
+				sum.rightOpMutable(value);
+			}
+			context.write(key, sum);
+		};
+	}
+
+	public MeldJob(Configuration configuration, Class<?> monoidClass, int level)
+			throws IOException, ClassNotFoundException, InterruptedException {
+		super(configuration);
+		configuration = null;
+
+		conf.set(ARG_MONOID_NAME, monoidClass.getName());
+
+		Path inputPath = new Path(INPUT_LEVELS_PATH + level);
+		Path outputPath = new Path(INPUT_LEVELS_PATH + (level + 1));
+		Path partitionPath = new Path(INPUT_LEVELS_PATH + PARTITION_NAME);
+
+		// setup job
 		setJarByClass(MeldJob.class);
 		setJobName(MeldJob.class.getName() + "@" + level);
 
-		setInputFormatClass(KeyValueTextInputFormat.class);
-		FileInputFormat.addInputPath(this, new Path(
-				"/user/user/input/prefixes/" + level));
+		// setup custom input format
+		KeyValueRangeMonoidInputFormat.setArgMonoidName(ARG_MONOID_NAME);
+		setInputFormatClass(KeyValueRangeMonoidInputFormat.class);
+		FileInputFormat.addInputPath(this, inputPath);
 
 		setMapperClass(MeldMapper.class);
 
 		setMapOutputKeyClass(RangeWritable.class);
-		setMapOutputValueClass(monoid);
+		setMapOutputValueClass(monoidClass);
+
+		setPartitionerClass(TotalOrderPartitioner.class);
+		TotalOrderPartitioner.setPartitionFile(conf, partitionPath);
+
+		setReducerClass(MeldReducer.class);
 
 		setOutputKeyClass(RangeWritable.class);
-		setOutputValueClass(monoid);
+		setOutputValueClass(monoidClass);
 
 		setOutputFormatClass(TextOutputFormat.class);
-		FileOutputFormat.setOutputPath(this, new Path(
-				"/user/user/input/prefixes/" + (level + 1)));
+		FileOutputFormat.setOutputPath(this, outputPath);
 
-		FileSystem fs = FileSystem.get(new Configuration());
-		fs.delete(new Path("/user/user/input/prefixes/" + (level + 1)), true);
+		// prepare partitions file
+		InputSampler.writePartitionFile(this,
+				new InputSampler.SplitSampler<RangeWritable, WritableMonoid>(
+						getNumReduceTasks()));
+
+		// prepare file system destination
+		FileSystem.get(conf).delete(outputPath, true);
 	}
 
-	public MeldJob(Class<?> monoid, int level) throws IOException {
+	public MeldJob(Class<?> monoid, int level) throws IOException,
+			ClassNotFoundException, InterruptedException {
 		this(new Configuration(), monoid, level);
 	}
 }
