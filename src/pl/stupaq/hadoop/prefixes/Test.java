@@ -12,6 +12,7 @@ public class Test {
 	 */
 	public static void main(String[] args) throws IOException,
 			ClassNotFoundException, InterruptedException {
+		// FIXME set reduce task number for each job
 
 		MeldJob job1 = new MeldJob(IntWritableMonoid.class, 0);
 		job1.waitForCompletion(true);

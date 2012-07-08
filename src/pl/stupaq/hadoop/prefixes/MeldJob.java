@@ -9,13 +9,12 @@ import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.SequenceFileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
-import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
+import org.apache.hadoop.mapreduce.lib.output.SequenceFileOutputFormat;
 import org.apache.hadoop.mapreduce.lib.partition.InputSampler;
 import org.apache.hadoop.mapreduce.lib.partition.TotalOrderPartitioner;
 
-// TODO automatically set reduce tasks number
-// TODO manage input and output formats
 public class MeldJob extends Job {
 
 	private static final String PARTITION_NAME = "_partition.lst";
@@ -114,8 +113,12 @@ public class MeldJob extends Job {
 		setJobName(SplitJob.class.getName() + "@" + level);
 
 		// setup custom input format
-		KeyValueRangeMonoidInputFormat.setArgMonoidName(ARG_MONOID_NAME);
-		setInputFormatClass(KeyValueRangeMonoidInputFormat.class);
+		if (level == 0) {
+			KeyValueRangeMonoidInputFormat.setArgMonoidName(ARG_MONOID_NAME);
+			setInputFormatClass(KeyValueRangeMonoidInputFormat.class);
+		} else {
+			setInputFormatClass(SequenceFileInputFormat.class);
+		}
 		FileInputFormat.addInputPath(this, inputPath);
 
 		setMapperClass(MeldMapper.class);
@@ -126,7 +129,7 @@ public class MeldJob extends Job {
 		setOutputKeyClass(RangeWritable.class);
 		setOutputValueClass(monoidClass);
 
-		setOutputFormatClass(TextOutputFormat.class);
+		setOutputFormatClass(SequenceFileOutputFormat.class);
 		FileOutputFormat.setOutputPath(this, outputPath);
 
 		// prepare file system destination

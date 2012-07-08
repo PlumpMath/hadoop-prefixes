@@ -8,15 +8,15 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Reducer;
-import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.MultipleInputs;
+import org.apache.hadoop.mapreduce.lib.input.SequenceFileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.mapreduce.lib.output.SequenceFileOutputFormat;
 import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
 import org.apache.hadoop.mapreduce.lib.partition.HashPartitioner;
 import org.apache.hadoop.mapreduce.lib.partition.InputSampler;
 import org.apache.hadoop.mapreduce.lib.partition.TotalOrderPartitioner;
 
-// TODO automatically set reduce tasks number
-// TODO manage input and output formats
 // FIXME ensure that partitioner don't send prefixes and subintervals to different reducers
 public class SplitJob extends Job {
 
@@ -90,11 +90,6 @@ public class SplitJob extends Job {
 		setJarByClass(SplitJob.class);
 		setJobName(SplitJob.class.getName() + "@" + level);
 
-		// setup custom input format
-		KeyValueRangeMonoidInputFormat.setArgMonoidName(ARG_MONOID_NAME);
-		setInputFormatClass(KeyValueRangeMonoidInputFormat.class);
-		// we're adding input paths later
-
 		setMapperClass(SplitMapper.class);
 		setMapOutputKeyClass(RangeWritable.class);
 		setMapOutputValueClass(monoidClass);
@@ -103,34 +98,45 @@ public class SplitJob extends Job {
 		setOutputKeyClass(RangeWritable.class);
 		setOutputValueClass(monoidClass);
 
-		setOutputFormatClass(TextOutputFormat.class);
+		if (level == 0) {
+			setOutputFormatClass(TextOutputFormat.class);
+		} else {
+			setOutputFormatClass(SequenceFileOutputFormat.class);
+		}
 		FileOutputFormat.setOutputPath(this, outputPath);
 
 		// prepare file system destination and ensure input
 		FileSystem fs = FileSystem.get(conf);
 		fs.delete(outputPath, true);
 
-		if (fs.exists(new Path(OUTPUT_LEVELS_PATH))) {
+		if (fs.exists(inputPathSplit)) {
 			// set total ordering
 			setPartitionerClass(TotalOrderPartitioner.class);
 			TotalOrderPartitioner.setPartitionFile(conf, partitionPath);
 			// add input path for sampling
-			FileInputFormat.addInputPath(this, inputPathSplit);
+			MultipleInputs.addInputPath(this, inputPathSplit,
+					SequenceFileInputFormat.class);
 			// prepare partitions file
 			InputSampler
 					.writePartitionFile(
 							this,
 							new InputSampler.SplitSampler<RangeWritable, WritableMonoid>(
 									getNumReduceTasks()));
-			// add other input paths
-			FileInputFormat.addInputPath(this, inputPathMeld);
 		} else {
 			// set hash partitioner
 			setPartitionerClass(HashPartitioner.class);
-			// add available all input paths
-			FileInputFormat.addInputPath(this, inputPathMeld);
 			// set one reducer
 			setNumReduceTasks(1);
+		}
+
+		// add other input paths
+		if (level == 0) {
+			KeyValueRangeMonoidInputFormat.setArgMonoidName(ARG_MONOID_NAME);
+			MultipleInputs.addInputPath(this, inputPathMeld,
+					KeyValueRangeMonoidInputFormat.class);
+		} else {
+			MultipleInputs.addInputPath(this, inputPathMeld,
+					SequenceFileInputFormat.class);
 		}
 
 		fs.close();
