@@ -2,6 +2,8 @@ package pl.stupaq.hadoop.prefixes;
 
 import java.io.IOException;
 
+import org.apache.hadoop.mapreduce.Job;
+
 public class Test {
 
 	/**
@@ -14,13 +16,22 @@ public class Test {
 			ClassNotFoundException, InterruptedException {
 		// FIXME set reduce task number for each job
 
-		MeldJob job1 = new MeldJob(IntWritableMonoid.class, 0);
-		job1.waitForCompletion(true);
+		Class<?> monoidClass = IntWritableMonoid.class;
 
-		SplitJob job2 = new SplitJob(IntWritableMonoid.class, 1);
-		job2.waitForCompletion(true);
+		int level = 0;
+		boolean success = false;
+		Job job;
 
-		SplitJob job3 = new SplitJob(IntWritableMonoid.class, 0);
-		job3.waitForCompletion(true);
+		do {
+			job = new MeldJob(monoidClass, level);
+			success = job.waitForCompletion(true);
+			++level;
+		} while (success && job.getNumReduceTasks() > 1);
+
+		while (success && level >= 0) {
+			job = new SplitJob(monoidClass, level);
+			success = job.waitForCompletion(true);
+			--level;
+		}
 	}
 }

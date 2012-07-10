@@ -4,7 +4,6 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 
-import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.WritableComparable;
 
 // NOTE magic happens in comparator
@@ -13,69 +12,65 @@ public class RangeWritable implements WritableComparable<RangeWritable>,
 
 	private static final long LOWEST_INDEX = 1;
 
-	private LongWritable first;
-	private LongWritable last;
+	private long first;
+	private long last;
 
 	public RangeWritable() {
 		this(0, 0);
 	}
 
 	public RangeWritable(long first, long last) {
-		this(new LongWritable(first), new LongWritable(last));
-	}
-
-	private RangeWritable(LongWritable first, LongWritable last) {
 		super();
 		this.first = first;
 		this.last = last;
 	}
 
 	public long getFirst() {
-		return first.get();
+		return first;
 	}
 
 	public long getLast() {
-		return last.get();
+		return last;
 	}
 
 	public boolean isNextRange(RangeWritable range) {
-		return last.get() + 1 == range.first.get();
+		return getLast() + 1 == range.getFirst();
 	}
 
 	public boolean meldNextRange(RangeWritable range) {
 		if (isNextRange(range)) {
-			last.set(range.last.get());
+			last = range.last;
 			return true;
 		}
 		return false;
 	}
 
 	public boolean isPrefix() {
-		return first.get() == LOWEST_INDEX;
+		return first == LOWEST_INDEX;
 	}
 
 	@Override
 	public void write(DataOutput out) throws IOException {
-		first.write(out);
-		last.write(out);
+		out.writeLong(first - Long.MIN_VALUE);
+		out.writeLong(last - Long.MIN_VALUE);
 	}
 
 	@Override
 	public void readFields(DataInput in) throws IOException {
-		first.readFields(in);
-		last.readFields(in);
+		first = in.readLong() + Long.MIN_VALUE;
+		last = in.readLong() + Long.MIN_VALUE;
 	}
 
 	@Override
 	public int hashCode() {
-		return first.hashCode() * 313 + last.hashCode() * 163;
+		return new Long(first).hashCode() * 313 + new Long(last).hashCode();
 	}
 
 	@Override
 	public boolean equals(Object o) {
 		if (o instanceof RangeWritable) {
 			RangeWritable r = (RangeWritable) o;
-			return first.equals(r.first) && last.equals(r.last);
+			return first == r.first && last == r.last;
 		}
 		return false;
 	}
@@ -93,9 +88,9 @@ public class RangeWritable implements WritableComparable<RangeWritable>,
 	}
 
 	private int lexicographicalCompare(RangeWritable r) {
-		int cmp = first.compareTo(r.first);
+		int cmp = Long.compare(first, r.first);
 		if (cmp == 0)
-			cmp = last.compareTo(r.last);
+			cmp = Long.compare(last, r.last);
 		return cmp;
 	}
 
